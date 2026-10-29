@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Khawchin</title>
+<style>
+  :root {
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --ink: #1e2430;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --line: #e5e7eb;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --error: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+  }
+  header {
+    padding: 24px 28px 8px;
+  }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header .subtitle { margin: 0; color: var(--muted); font-size: 14px; }
+  .controls {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 28px 4px;
+  }
+  #refreshBtn {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 8px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  #refreshBtn:hover { filter: brightness(1.08); }
+  #refreshBtn:disabled { opacity: 0.55; cursor: wait; }
+  #lastUpdated { color: var(--muted); font-size: 13px; }
+
+  main.grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+    padding: 16px 28px 8px;
+  }
+  @media (max-width: 900px) { main.grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+  }
+  .card-head h2 { margin: 0; font-size: 16px; }
+  .badge {
+    font-size: 12px; font-weight: 600; padding: 3px 10px;
+    border-radius: 999px; background: #eef2f7; color: var(--muted);
+  }
+  .badge.ok    { background: #dcfce7; color: var(--ok); }
+  .badge.warn  { background: #fef3c7; color: var(--warn); }
+  .badge.error { background: #fee2e2; color: var(--error); }
+  .badge.loading { background: #e0e7ff; color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 10px 18px; text-align: left; border-bottom: 1px solid var(--line); }
+  th {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); background: #fafbfd;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: #f8fafc; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.empty td { color: var(--muted); font-style: italic; text-align: center; }
+
+  footer { padding: 10px 28px 26px; color: var(--muted); font-size: 12.5px; }
+  footer code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Khawchin</h1>
+    <p class="subtitle">Hours with rain probability above threshold, from two sources.</p>
+  </header>
+
+  <div class="controls">
+    <button id="refreshBtn">Refresh</button>
+    <span id="lastUpdated"></span>
+  </div>
+
+  <main class="grid">
+    <section class="card" id="accuCard">
+      <div class="card-head">
+        <h2>AccuWeather</h2>
+        <span class="badge loading" id="accuStatus">loading&hellip;</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+        </thead>
+        <tbody id="accuBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card" id="wuCard">
+      <div class="card-head">
+        <h2>Wunderground</h2>
+        <span class="badge loading" id="wuStatus">loading&hellip;</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+        </thead>
+        <tbody id="wuBody"></tbody>
+      </table>
+    </section>
+  </main>
+
+
+
+<!-- Corsfix: exposes window.corsfix.fetch(), a drop-in fetch() replacement.
+     Its proxy only accepts localhost / registered origins — from file:// it
+     answers "missing valid Origin header" and the page falls back to
+     api.cors.lol (see FETCH_STRATEGIES below). -->
+<script src="https://unpkg.com/corsfix"></script>
+<script>
+"use strict";
+
+/* ============================= CONFIG ============================= */
+
+const SOURCES = {
+  accuweather: {
+    label: "AccuWeather",
+    // day: 1 = today (default page). Later set day: 2 for tomorrow's hours —
+    // the URL then becomes .../hourly-weather-forecast/189561?day=2
+    day: 1,
+    buildUrl() {
+      const base =
+        "https://www.accuweather.com/en/in/aizawl/189561/hourly-weather-forecast/189561";
+      return this.day > 1 ? `${base}?day=${this.day}` : base;
+    },
+    parse: parseAccuWeather,
+    statusId: "accuStatus",
+    bodyId: "accuBody",
+    // AccuWeather works with a plain fetch — no CORS helper needed.
+    fetchVia: ["direct"],
+  },
+  wunderground: {
+    label: "Wunderground",
+    buildUrl() {
+      return "https://www.wunderground.com/hourly/in/aizawl";
+    },
+    // No rain is expected right now on wunderground, so the page passes
+    // all=true and lists every hour. Set to false to only keep hours
+    // whose precip chance is 50% or higher.
+    // all: true,
+    parse: parseWunderground,
+    statusId: "wuStatus",
+    bodyId: "wuBody",
+    // Wunderground sends no CORS headers, so it must go through a proxy:
+    // Corsfix first (works when this page runs on localhost or a registered
+    // origin), then api.cors.lol (public, but aggressively rate-limited).
+    fetchVia: ["corsfix", "cors.lol"],
+  },
+};
+
+/* ========================= FETCH HELPERS ==========================
+ * Each source declares its own strategy chain (SOURCES.*.fetchVia);
+ * strategies are tried in order and the first success wins:
+ *   direct   — plain fetch (AccuWeather needs no CORS helper)
+ *   corsfix  — via the unpkg corsfix script; the proxy only accepts
+ *              requests from localhost or a registered origin, and
+ *              rejects file:// pages ("missing valid Origin header")
+ *   cors.lol — public URL-prefix proxy, last resort (rate-limited) */
+
+function readHtml(res) {
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text().then((html) => {
+    if (html.length < 500) throw new Error("response too small (bot-check page?)");
+    return html;
+  });
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label + " timed out")), ms);
+  });
+  // If the timeout wins the race, swallow the loser's late rejection.
+  promise.catch(() => {});
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function fetchDirect(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    return await readHtml(res);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchViaCorsfix(url, timeoutMs) {
+  // The unpkg script may fail to load (offline / blocked) — then skip it.
+  if (
+    typeof corsfix === "undefined" ||
+    !corsfix ||
+    typeof corsfix.fetch !== "function"
+  ) {
+    throw new Error("script not loaded");
+  }
+  const res = await withTimeout(corsfix.fetch(url), timeoutMs, "corsfix");
+  return readHtml(res);
+}
+
+async function fetchViaCorsLol(url, timeoutMs) {
+  const attempt = () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    return fetch(`https://api.cors.lol/?url=${encodeURIComponent(url)}`, {
+      signal: ctrl.signal,
+    })
+      .then(readHtml)
+      .finally(() => clearTimeout(timer));
+  };
+  try {
+    return await attempt();
+  } catch (err) {
+    if (/HTTP 429/.test(err.message)) {
+      // cors.lol is aggressively rate-limited — wait briefly, retry once.
+      await new Promise((r) => setTimeout(r, 4000));
+      return attempt();
+    }
+    throw err;
+  }
+}
+
+const FETCH_STRATEGIES = {
+  direct: fetchDirect,
+  corsfix: fetchViaCorsfix,
+  "cors.lol": fetchViaCorsLol,
+};
+
+async function fetchWithStrategies(url, chain, { timeoutMs = 20000 } = {}) {
+  const errors = [];
+  for (const name of chain) {
+    try {
+      const html = await FETCH_STRATEGIES[name](url, timeoutMs);
+      return { html, via: name };
+    } catch (err) {
+      errors.push(`${name}: ${err.message}`);
+    }
+  }
+  throw new Error(errors.join(" | "));
+}
+
+/* ====================== ACCUWEATHER PARSER ========================
+ * Returns every hour with precip > 49% that reports a "Rain" amount.  */
+
+function parseAccuWeather(doc = document) {
+  const wrapper = doc.querySelector(".hourly-wrapper.content-module");
+  if (!wrapper) return [];
+
+  const results = [];
+
+  wrapper.querySelectorAll(".accordion-item.hour").forEach((item) => {
+    const hourEl = item.querySelector("h2.date");
+    if (!hourEl) return;
+    const hour = hourEl.textContent.trim();
+
+    // The drop icon is an <img> and contributes no text.
+    const precipEl = item.querySelector(".precip");
+    if (!precipEl) return;
+    const precipMatch = precipEl.textContent.match(/\d+/);
+    if (!precipMatch) return;
+    const precip = parseInt(precipMatch[0], 10);
+
+    if (precip <= 49) return;
+
+    let value = null;
+    item.querySelectorAll(".panel p").forEach((p) => {
+      // Label ("Rain", "Wind", ...) is the first non-empty text node;
+      // nodeType 3 === Node.TEXT_NODE (literal keeps it runtime-agnostic).
+      const labelNode = Array.from(p.childNodes).find(
+        (n) => n.nodeType === 3 && n.textContent.trim() !== ""
+      );
+      if (labelNode && labelNode.textContent.trim() === "Rain") {
+        const valEl = p.querySelector("span.value");
+        if (valEl) value = valEl.textContent.trim();
+      }
+    });
+
+    if (value !== null) results.push({ hour, precip: precip + "%", value });
+  });
+
+  return results;
+}
+
+/* ====================== WUNDERGROUND PARSER =======================
+ * Reads the hourly table: td[0] = time, td[4] = precip chance,
+ * td[5] = amount. Amounts in inches are converted to millimetres.     */
+
+/**
+ * Converts an amount string like "0.05 in" or "0mm" to mm.
+ * @param {string} text
+ * @returns {string|null} e.g. "1.27 mm", or null when unparseable (e.g. "--")
+ */
+function wuAmountToMm(text) {
+  if (!text) return null;
+  const match = text.match(/([\d.]+)\s*(in|inch|inches|mm|millimet(?:er|re)s?)?/i);
+  if (!match || match[1] === "" || match[1] === ".") return null;
+
+  const amount = parseFloat(match[1]);
+  if (Number.isNaN(amount)) return null;
+
+  const unit = (match[2] || "mm").toLowerCase();
+  const mm = unit.startsWith("in") ? amount * 25.4 : amount;
+
+  // Round to 2 decimals (e.g. 0.05 in → 1.27 mm).
+  return Math.round(mm * 100) / 100 + " mm";
+}
+
+function parseWunderground(doc = document, all = false) {
+  // 1. Locate the hourly table wrapper
+  const wrapper = doc.querySelector(".table-scroll");
+  if (!wrapper) return [];
+  const tbody = wrapper.querySelector("tbody");
+  if (!tbody) return [];
+
+  const results = [];
+
+  // 2. Each <tr> in the tbody is one hour
+  tbody.querySelectorAll("tr").forEach((tr) => {
+    const cells = tr.querySelectorAll("td");
+    if (cells.length < 6) return; // header or malformed row — skip
+
+    const time = cells[0].textContent.trim();
+    const precipText = cells[4].textContent.trim();
+    const amountText = cells[5].textContent.trim();
+
+    const pctMatch = precipText.match(/\d+/);
+
+    // 3a. all-mode: keep every row; unparseable amounts stay verbatim ("--")
+    if (all) {
+      results.push({
+        hour: time,
+        precip: pctMatch ? parseInt(pctMatch[0], 10) + "%" : precipText,
+        value: wuAmountToMm(amountText) ?? amountText,
+      });
+      return;
+    }
+
+    // 3b. filtered mode: drop rows below 50% (or without a percentage)
+    if (!pctMatch) return;
+    const percent = parseInt(pctMatch[0], 10);
+    if (percent < 50) return;
+
+    const value = wuAmountToMm(amountText);
+    if (value === null) return;
+
+    results.push({ hour: time, precip: percent + "%", value });
+  });
+
+  return results;
+}
+
+/* ============================ RENDER ============================== */
+
+function setStatus(el, text, kind) {
+  el.textContent = text;
+  el.className = "badge" + (kind ? " " + kind : "");
+}
+
+function renderRows(tbody, rows) {
+  tbody.innerHTML = "";
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.className = "empty";
+    const td = document.createElement("td");
+    td.colSpan = 3;
+    td.textContent = "No matching hours";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    for (const cell of [row.hour, row.precip, row.value]) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      if (cell !== row.hour) td.className = "num";
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+async function loadSource(key) {
+  const src = SOURCES[key];
+  const statusEl = document.getElementById(src.statusId);
+  const bodyEl = document.getElementById(src.bodyId);
+
+  setStatus(statusEl, "fetching\u2026", "loading");
+  try {
+    const { html, via } = await fetchWithStrategies(src.buildUrl(), src.fetchVia);
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const rows = src.parse(parsed, src.all);
+    renderRows(bodyEl, rows);
+    if (rows.length) {
+      setStatus(statusEl, `${rows.length} hours \u00b7 ${via}`, "ok");
+    } else {
+      setStatus(
+        statusEl,
+        `No rain`,
+        "warn"
+      );
+    }
+  } catch (err) {
+    renderRows(bodyEl, []);
+    setStatus(statusEl, "fetch failed", "error");
+    bodyEl.querySelector("td") &&
+      (bodyEl.querySelector("td").textContent = "Fetch failed \u2014 " + err.message);
+  }
+}
+
+async function loadAll() {
+  const btn = document.getElementById("refreshBtn");
+  btn.disabled = true;
+  await Promise.all([loadSource("accuweather"), loadSource("wunderground")]);
+  document.getElementById("lastUpdated").textContent =
+    "Updated " + new Date().toLocaleTimeString();
+  btn.disabled = false;
+}
+
+document.getElementById("refreshBtn").addEventListener("click", loadAll);
+loadAll();
+</script>
+</body>
+</html>
