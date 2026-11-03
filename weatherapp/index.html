@@ -51,9 +51,7 @@
     background: var(--card); border: 1px solid var(--line);
     border-radius: 12px; overflow: hidden;
     box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
-  }
-  .card.full-width {
-    grid-column: 100%;
+    width: 100%;
   }
   .card-head {
     display: flex; align-items: center; justify-content: space-between;
@@ -122,7 +120,7 @@
       </table>
     </section>
 
-    <section class="card full-width" id="accuAllCard">
+    <section class="card" id="accuAllCard">
       <div class="card-head">
         <h2>AccuWeather (All Raw Data)</h2>
         <span class="badge loading" id="accuAllStatus">loading&hellip;</span>
@@ -135,7 +133,7 @@
       </table>
     </section>
 
-    <section class="card full-width" id="wuAllCard">
+    <section class="card" id="wuAllCard">
       <div class="card-head">
         <h2>Wunderground (All Raw Data)</h2>
         <span class="badge loading" id="wuAllStatus">loading&hellip;</span>
@@ -184,7 +182,7 @@ const SOURCES = {
     parse: parseAccuWeather,
     statusId: "accuStatus",
     bodyId: "accuBody",
-    fetchVia: ["direct"],
+    fetchVia: ["proxy"],
   },
   accuweather_all: {
     label: "AccuWeather (All)",
@@ -199,7 +197,7 @@ const SOURCES = {
     parse: parseAccuWeather,
     statusId: "accuAllStatus",
     bodyId: "accuAllBody",
-    fetchVia: ["direct"],
+    fetchVia: ["proxy"],
   },
   wunderground: {
     label: "Wunderground",
@@ -242,17 +240,6 @@ function readHtml(res) {
   });
 }
 
-async function fetchDirect(url, timeoutMs) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    return await readHtml(res);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function fetchViaProxy(url, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -272,7 +259,6 @@ async function fetchViaProxy(url, timeoutMs) {
 }
 
 const FETCH_STRATEGIES = {
-  direct: fetchDirect,
   proxy: fetchViaProxy,
 };
 
@@ -449,18 +435,15 @@ async function loadSource(key) {
   try {
     const targets = src.buildUrls();
     let allRows = [];
-    let usedVias = new Set();
 
     for (const target of targets) {
-      const { html, via } = await fetchWithStrategies(target.url, src.fetchVia);
-      usedVias.add(via);
+      const { html } = await fetchWithStrategies(target.url, src.fetchVia);
       const parsed = new DOMParser().parseFromString(html, "text/html");
       const rows = src.parse(parsed, src.all, target.dayLabel);
       allRows.push(...rows);
     }
 
     renderRows(bodyEl, allRows);
-    const viaText = Array.from(usedVias).join("/");
     if (allRows.length) {
       setStatus(statusEl, `${allRows.length} hours`, "ok");
     } else {
