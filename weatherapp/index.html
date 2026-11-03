@@ -53,7 +53,7 @@
     box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   }
   .card.full-width {
-    grid-column: 1 / -1;
+    grid-column: 100%;
   }
   .card-head {
     display: flex; align-items: center; justify-content: space-between;
@@ -103,7 +103,7 @@
       </div>
       <table>
         <thead>
-          <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+          <tr><th>Time</th><th class="num">Precip</th><th class="num">Rain</th></tr>
         </thead>
         <tbody id="accuBody"></tbody>
       </table>
@@ -111,14 +111,27 @@
 
     <section class="card" id="wuCard">
       <div class="card-head">
-        <h2>Wunderground (Filtered >= 50%)</h2>
+        <h2>Wunderground</h2>
         <span class="badge loading" id="wuStatus">loading&hellip;</span>
       </div>
       <table>
         <thead>
-          <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+          <tr><th>Time</th><th class="num">Precip</th><th class="num">Rain</th></tr>
         </thead>
         <tbody id="wuBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card full-width" id="accuAllCard">
+      <div class="card-head">
+        <h2>AccuWeather (All Raw Data)</h2>
+        <span class="badge loading" id="accuAllStatus">loading&hellip;</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Time</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+        </thead>
+        <tbody id="accuAllBody"></tbody>
       </table>
     </section>
 
@@ -129,7 +142,7 @@
       </div>
       <table>
         <thead>
-          <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+          <tr><th>Time</th><th class="num">Precip</th><th class="num">Rain</th></tr>
         </thead>
         <tbody id="wuAllBody"></tbody>
       </table>
@@ -149,40 +162,73 @@ if (window.location.protocol === 'https:') {
   endpoint = 'cors.test';
 }
 
+function getTomorrowDateString() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const year = tomorrow.getFullYear();
+  const month = String(tomorrow.getMonth() + 1).padStart(2, '0');
+  const day = String(tomorrow.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 const SOURCES = {
   accuweather: {
     label: "AccuWeather",
-    day: 1,
-    buildUrl() {
-      const base =
-        "https://www.accuweather.com/en/in/aizawl/189561/hourly-weather-forecast/189561";
-      return this.day > 1 ? `${base}?day=${this.day}` : base;
+    buildUrls() {
+      const base = "https://www.accuweather.com/en/in/aizawl/189561/hourly-weather-forecast/189561";
+      return [
+        { dayLabel: "Today", url: base },
+        { dayLabel: "Tomorrow", url: `${base}?day=2` }
+      ];
     },
     parse: parseAccuWeather,
     statusId: "accuStatus",
     bodyId: "accuBody",
     fetchVia: ["direct"],
   },
+  accuweather_all: {
+    label: "AccuWeather (All)",
+    all: true,
+    buildUrls() {
+      const base = "https://www.accuweather.com/en/in/aizawl/189561/hourly-weather-forecast/189561";
+      return [
+        { dayLabel: "Today", url: base },
+        { dayLabel: "Tomorrow", url: `${base}?day=2` }
+      ];
+    },
+    parse: parseAccuWeather,
+    statusId: "accuAllStatus",
+    bodyId: "accuAllBody",
+    fetchVia: ["direct"],
+  },
   wunderground: {
     label: "Wunderground",
-    buildUrl() {
-      return "https://www.wunderground.com/hourly/in/aizawl";
+    buildUrls() {
+      const tomorrow = getTomorrowDateString();
+      return [
+        { dayLabel: "Today", url: "https://www.wunderground.com/hourly/in/aizawl" },
+        { dayLabel: "Tomorrow", url: `https://www.wunderground.com/hourly/in/aizawl/date/${tomorrow}` }
+      ];
     },
     parse: parseWunderground,
     statusId: "wuStatus",
     bodyId: "wuBody",
-    fetchVia: ["localProxy"],
+    fetchVia: ["proxy"],
   },
   wunderground_all: {
     label: "Wunderground (All)",
-    buildUrl() {
-      return "https://www.wunderground.com/hourly/in/aizawl";
-    },
     all: true,
+    buildUrls() {
+      const tomorrow = getTomorrowDateString();
+      return [
+        { dayLabel: "Today", url: "https://www.wunderground.com/hourly/in/aizawl" },
+        { dayLabel: "Tomorrow", url: `https://www.wunderground.com/hourly/in/aizawl/date/${tomorrow}` }
+      ];
+    },
     parse: parseWunderground,
     statusId: "wuAllStatus",
     bodyId: "wuAllBody",
-    fetchVia: ["localProxy"],
+    fetchVia: ["proxy"],
   },
 };
 
@@ -227,7 +273,7 @@ async function fetchViaProxy(url, timeoutMs) {
 
 const FETCH_STRATEGIES = {
   direct: fetchDirect,
-  localProxy: fetchViaProxy,
+  proxy: fetchViaProxy,
 };
 
 async function fetchWithStrategies(url, chain, { timeoutMs = 20000 } = {}) {
@@ -245,7 +291,7 @@ async function fetchWithStrategies(url, chain, { timeoutMs = 20000 } = {}) {
 
 /* ====================== ACCUWEATHER PARSER ======================== */
 
-function parseAccuWeather(doc = document) {
+function parseAccuWeather(doc = document, all = false, dayLabel = "") {
   const wrapper = doc.querySelector(".hourly-wrapper.content-module");
   if (!wrapper) return [];
 
@@ -254,15 +300,13 @@ function parseAccuWeather(doc = document) {
   wrapper.querySelectorAll(".accordion-item.hour").forEach((item) => {
     const hourEl = item.querySelector("h2.date");
     if (!hourEl) return;
-    const hour = hourEl.textContent.trim();
+    const rawHour = hourEl.textContent.trim();
 
     const precipEl = item.querySelector(".precip");
     if (!precipEl) return;
     const precipMatch = precipEl.textContent.match(/\d+/);
     if (!precipMatch) return;
     const precip = parseInt(precipMatch[0], 10);
-
-    if (precip <= 49) return;
 
     let value = null;
     item.querySelectorAll(".panel p").forEach((p) => {
@@ -275,7 +319,27 @@ function parseAccuWeather(doc = document) {
       }
     });
 
-    if (value !== null) results.push({ hour, precip: precip + "%", value });
+    if (all) {
+      results.push({
+        dayLabel,
+        rawTime: rawHour,
+        hour: `${dayLabel} ${rawHour}`,
+        precip: precip + "%",
+        value: value ?? "--",
+      });
+      return;
+    }
+
+    if (precip <= 49) return;
+    if (value !== null) {
+      results.push({
+        dayLabel,
+        rawTime: rawHour,
+        hour: `${dayLabel} ${rawHour}`,
+        precip: precip + "%",
+        value
+      });
+    }
   });
 
   return results;
@@ -297,7 +361,7 @@ function wuAmountToMm(text) {
   return Math.round(mm * 100) / 100 + " mm";
 }
 
-function parseWunderground(doc = document, all = false) {
+function parseWunderground(doc = document, all = false, dayLabel = "") {
   const wrapper = doc.querySelector(".table-scroll");
   if (!wrapper) return [];
   const tbody = wrapper.querySelector("tbody");
@@ -317,7 +381,9 @@ function parseWunderground(doc = document, all = false) {
 
     if (all) {
       results.push({
-        hour: time,
+        dayLabel,
+        rawTime: time,
+        hour: `${dayLabel} ${time}`,
         precip: pctMatch ? parseInt(pctMatch[0], 10) + "%" : precipText,
         value: wuAmountToMm(amountText) ?? amountText,
       });
@@ -331,7 +397,13 @@ function parseWunderground(doc = document, all = false) {
     const value = wuAmountToMm(amountText);
     if (value === null) return;
 
-    results.push({ hour: time, precip: percent + "%", value });
+    results.push({
+      dayLabel,
+      rawTime: time,
+      hour: `${dayLabel} ${time}`,
+      precip: percent + "%",
+      value
+    });
   });
 
   return results;
@@ -375,12 +447,22 @@ async function loadSource(key) {
 
   setStatus(statusEl, "fetching\u2026", "loading");
   try {
-    const { html, via } = await fetchWithStrategies(src.buildUrl(), src.fetchVia);
-    const parsed = new DOMParser().parseFromString(html, "text/html");
-    const rows = src.parse(parsed, src.all);
-    renderRows(bodyEl, rows);
-    if (rows.length) {
-      setStatus(statusEl, `${rows.length} hours \u00b7 ${via}`, "ok");
+    const targets = src.buildUrls();
+    let allRows = [];
+    let usedVias = new Set();
+
+    for (const target of targets) {
+      const { html, via } = await fetchWithStrategies(target.url, src.fetchVia);
+      usedVias.add(via);
+      const parsed = new DOMParser().parseFromString(html, "text/html");
+      const rows = src.parse(parsed, src.all, target.dayLabel);
+      allRows.push(...rows);
+    }
+
+    renderRows(bodyEl, allRows);
+    const viaText = Array.from(usedVias).join("/");
+    if (allRows.length) {
+      setStatus(statusEl, `${allRows.length} hours`, "ok");
     } else {
       setStatus(statusEl, `No data / rain`, "warn");
     }
@@ -399,6 +481,7 @@ async function loadAll() {
   await Promise.all([
     loadSource("accuweather"),
     loadSource("wunderground"),
+    loadSource("accuweather_all"),
     loadSource("wunderground_all")
   ]);
   document.getElementById("lastUpdated").textContent =
