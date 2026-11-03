@@ -120,23 +120,22 @@
     </section>
   </main>
 
-
-
-<!-- Corsfix: exposes window.corsfix.fetch(), a drop-in fetch() replacement.
-     Its proxy only accepts localhost / registered origins — from file:// it
-     answers "missing valid Origin header" and the page falls back to
-     api.cors.lol (see FETCH_STRATEGIES below). -->
-<script src="https://unpkg.com/corsfix"></script>
 <script>
 "use strict";
 
 /* ============================= CONFIG ============================= */
 
+let endpoint;
+if (window.location.protocol === 'https:') {
+  // production
+  endpoint = 'PRODUCTION_ENDPOINT';
+} else {
+  endpoint = 'cors.test';
+}
+
 const SOURCES = {
   accuweather: {
     label: "AccuWeather",
-    // day: 1 = today (default page). Later set day: 2 for tomorrow's hours —
-    // the URL then becomes .../hourly-weather-forecast/189561?day=2
     day: 1,
     buildUrl() {
       const base =
@@ -146,7 +145,6 @@ const SOURCES = {
     parse: parseAccuWeather,
     statusId: "accuStatus",
     bodyId: "accuBody",
-    // AccuWeather works with a plain fetch — no CORS helper needed.
     fetchVia: ["direct"],
   },
   wunderground: {
@@ -154,28 +152,14 @@ const SOURCES = {
     buildUrl() {
       return "https://www.wunderground.com/hourly/in/aizawl";
     },
-    // No rain is expected right now on wunderground, so the page passes
-    // all=true and lists every hour. Set to false to only keep hours
-    // whose precip chance is 50% or higher.
-    // all: true,
     parse: parseWunderground,
     statusId: "wuStatus",
     bodyId: "wuBody",
-    // Wunderground sends no CORS headers, so it must go through a proxy:
-    // Corsfix first (works when this page runs on localhost or a registered
-    // origin), then api.cors.lol (public, but aggressively rate-limited).
-    fetchVia: ["corsfix", "cors.lol"],
+    fetchVia: ["localProxy"],
   },
 };
 
-/* ========================= FETCH HELPERS ==========================
- * Each source declares its own strategy chain (SOURCES.*.fetchVia);
- * strategies are tried in order and the first success wins:
- *   direct   — plain fetch (AccuWeather needs no CORS helper)
- *   corsfix  — via the unpkg corsfix script; the proxy only accepts
- *              requests from localhost or a registered origin, and
- *              rejects file:// pages ("missing valid Origin header")
- *   cors.lol — public URL-prefix proxy, last resort (rate-limited) */
+/* ========================= FETCH HELPERS ========================== */
 
 function readHtml(res) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -183,16 +167,6 @@ function readHtml(res) {
     if (html.length < 500) throw new Error("response too small (bot-check page?)");
     return html;
   });
-}
-
-function withTimeout(promise, ms, label) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(label + " timed out")), ms);
-  });
-  // If the timeout wins the race, swallow the loser's late rejection.
-  promise.catch(() => {});
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function fetchDirect(url, timeoutMs) {
@@ -206,45 +180,28 @@ async function fetchDirect(url, timeoutMs) {
   }
 }
 
-async function fetchViaCorsfix(url, timeoutMs) {
-  // The unpkg script may fail to load (offline / blocked) — then skip it.
-  if (
-    typeof corsfix === "undefined" ||
-    !corsfix ||
-    typeof corsfix.fetch !== "function"
-  ) {
-    throw new Error("script not loaded");
-  }
-  const res = await withTimeout(corsfix.fetch(url), timeoutMs, "corsfix");
-  return readHtml(res);
-}
+async function fetchViaProxy(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
-async function fetchViaCorsLol(url, timeoutMs) {
-  const attempt = () => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    return fetch(`https://api.cors.lol/?url=${encodeURIComponent(url)}`, {
-      signal: ctrl.signal,
-    })
-      .then(readHtml)
-      .finally(() => clearTimeout(timer));
-  };
+  // Build proxy URL (handles endpoint whether or not it already contains a protocol)
+  const proxyBase = endpoint.startsWith("http")
+    ? endpoint
+    : `${window.location.protocol}//${endpoint}`;
+
+  const proxyUrl = `${proxyBase.replace(/\/+$/, '')}/?url=${encodeURIComponent(url)}`;
+
   try {
-    return await attempt();
-  } catch (err) {
-    if (/HTTP 429/.test(err.message)) {
-      // cors.lol is aggressively rate-limited — wait briefly, retry once.
-      await new Promise((r) => setTimeout(r, 4000));
-      return attempt();
-    }
-    throw err;
+    const res = await fetch(proxyUrl, { signal: ctrl.signal });
+    return await readHtml(res);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 const FETCH_STRATEGIES = {
   direct: fetchDirect,
-  corsfix: fetchViaCorsfix,
-  "cors.lol": fetchViaCorsLol,
+  localProxy: fetchViaProxy,
 };
 
 async function fetchWithStrategies(url, chain, { timeoutMs = 20000 } = {}) {
@@ -260,8 +217,7 @@ async function fetchWithStrategies(url, chain, { timeoutMs = 20000 } = {}) {
   throw new Error(errors.join(" | "));
 }
 
-/* ====================== ACCUWEATHER PARSER ========================
- * Returns every hour with precip > 49% that reports a "Rain" amount.  */
+/* ====================== ACCUWEATHER PARSER ======================== */
 
 function parseAccuWeather(doc = document) {
   const wrapper = doc.querySelector(".hourly-wrapper.content-module");
@@ -274,7 +230,6 @@ function parseAccuWeather(doc = document) {
     if (!hourEl) return;
     const hour = hourEl.textContent.trim();
 
-    // The drop icon is an <img> and contributes no text.
     const precipEl = item.querySelector(".precip");
     if (!precipEl) return;
     const precipMatch = precipEl.textContent.match(/\d+/);
@@ -285,8 +240,6 @@ function parseAccuWeather(doc = document) {
 
     let value = null;
     item.querySelectorAll(".panel p").forEach((p) => {
-      // Label ("Rain", "Wind", ...) is the first non-empty text node;
-      // nodeType 3 === Node.TEXT_NODE (literal keeps it runtime-agnostic).
       const labelNode = Array.from(p.childNodes).find(
         (n) => n.nodeType === 3 && n.textContent.trim() !== ""
       );
@@ -302,15 +255,8 @@ function parseAccuWeather(doc = document) {
   return results;
 }
 
-/* ====================== WUNDERGROUND PARSER =======================
- * Reads the hourly table: td[0] = time, td[4] = precip chance,
- * td[5] = amount. Amounts in inches are converted to millimetres.     */
+/* ====================== WUNDERGROUND PARSER ======================= */
 
-/**
- * Converts an amount string like "0.05 in" or "0mm" to mm.
- * @param {string} text
- * @returns {string|null} e.g. "1.27 mm", or null when unparseable (e.g. "--")
- */
 function wuAmountToMm(text) {
   if (!text) return null;
   const match = text.match(/([\d.]+)\s*(in|inch|inches|mm|millimet(?:er|re)s?)?/i);
@@ -322,12 +268,10 @@ function wuAmountToMm(text) {
   const unit = (match[2] || "mm").toLowerCase();
   const mm = unit.startsWith("in") ? amount * 25.4 : amount;
 
-  // Round to 2 decimals (e.g. 0.05 in → 1.27 mm).
   return Math.round(mm * 100) / 100 + " mm";
 }
 
 function parseWunderground(doc = document, all = false) {
-  // 1. Locate the hourly table wrapper
   const wrapper = doc.querySelector(".table-scroll");
   if (!wrapper) return [];
   const tbody = wrapper.querySelector("tbody");
@@ -335,10 +279,9 @@ function parseWunderground(doc = document, all = false) {
 
   const results = [];
 
-  // 2. Each <tr> in the tbody is one hour
   tbody.querySelectorAll("tr").forEach((tr) => {
     const cells = tr.querySelectorAll("td");
-    if (cells.length < 6) return; // header or malformed row — skip
+    if (cells.length < 6) return;
 
     const time = cells[0].textContent.trim();
     const precipText = cells[4].textContent.trim();
@@ -346,7 +289,6 @@ function parseWunderground(doc = document, all = false) {
 
     const pctMatch = precipText.match(/\d+/);
 
-    // 3a. all-mode: keep every row; unparseable amounts stay verbatim ("--")
     if (all) {
       results.push({
         hour: time,
@@ -356,7 +298,6 @@ function parseWunderground(doc = document, all = false) {
       return;
     }
 
-    // 3b. filtered mode: drop rows below 50% (or without a percentage)
     if (!pctMatch) return;
     const percent = parseInt(pctMatch[0], 10);
     if (percent < 50) return;
@@ -415,17 +356,14 @@ async function loadSource(key) {
     if (rows.length) {
       setStatus(statusEl, `${rows.length} hours \u00b7 ${via}`, "ok");
     } else {
-      setStatus(
-        statusEl,
-        `No rain`,
-        "warn"
-      );
+      setStatus(statusEl, `No rain`, "warn");
     }
   } catch (err) {
     renderRows(bodyEl, []);
     setStatus(statusEl, "fetch failed", "error");
-    bodyEl.querySelector("td") &&
-      (bodyEl.querySelector("td").textContent = "Fetch failed \u2014 " + err.message);
+    if (bodyEl.querySelector("td")) {
+      bodyEl.querySelector("td").textContent = "Fetch failed \u2014 " + err.message;
+    }
   }
 }
 
