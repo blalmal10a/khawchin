@@ -52,6 +52,9 @@
     border-radius: 12px; overflow: hidden;
     box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   }
+  .card.full-width {
+    grid-column: 1 / -1;
+  }
   .card-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 18px; border-bottom: 1px solid var(--line);
@@ -108,7 +111,7 @@
 
     <section class="card" id="wuCard">
       <div class="card-head">
-        <h2>Wunderground</h2>
+        <h2>Wunderground (Filtered >= 50%)</h2>
         <span class="badge loading" id="wuStatus">loading&hellip;</span>
       </div>
       <table>
@@ -116,6 +119,19 @@
           <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
         </thead>
         <tbody id="wuBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card full-width" id="wuAllCard">
+      <div class="card-head">
+        <h2>Wunderground (All Raw Data)</h2>
+        <span class="badge loading" id="wuAllStatus">loading&hellip;</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Hour</th><th class="num">Precip</th><th class="num">Rain</th></tr>
+        </thead>
+        <tbody id="wuAllBody"></tbody>
       </table>
     </section>
   </main>
@@ -157,6 +173,17 @@ const SOURCES = {
     bodyId: "wuBody",
     fetchVia: ["localProxy"],
   },
+  wunderground_all: {
+    label: "Wunderground (All)",
+    buildUrl() {
+      return "https://www.wunderground.com/hourly/in/aizawl";
+    },
+    all: true,
+    parse: parseWunderground,
+    statusId: "wuAllStatus",
+    bodyId: "wuAllBody",
+    fetchVia: ["localProxy"],
+  },
 };
 
 /* ========================= FETCH HELPERS ========================== */
@@ -184,7 +211,6 @@ async function fetchViaProxy(url, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
-  // Build proxy URL (handles endpoint whether or not it already contains a protocol)
   const proxyBase = endpoint.startsWith("http")
     ? endpoint
     : `${window.location.protocol}//${endpoint}`;
@@ -356,7 +382,7 @@ async function loadSource(key) {
     if (rows.length) {
       setStatus(statusEl, `${rows.length} hours \u00b7 ${via}`, "ok");
     } else {
-      setStatus(statusEl, `No rain`, "warn");
+      setStatus(statusEl, `No data / rain`, "warn");
     }
   } catch (err) {
     renderRows(bodyEl, []);
@@ -370,7 +396,11 @@ async function loadSource(key) {
 async function loadAll() {
   const btn = document.getElementById("refreshBtn");
   btn.disabled = true;
-  await Promise.all([loadSource("accuweather"), loadSource("wunderground")]);
+  await Promise.all([
+    loadSource("accuweather"),
+    loadSource("wunderground"),
+    loadSource("wunderground_all")
+  ]);
   document.getElementById("lastUpdated").textContent =
     "Updated " + new Date().toLocaleTimeString();
   btn.disabled = false;
