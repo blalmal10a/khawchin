@@ -1,7 +1,7 @@
 {
   "hosting": {
     "site": "khawchin",
-    "public": "weatherapp/public",
+    "public": "weatherapp",
     "ignore": [
       "firebase.json",
       "**/.*",
